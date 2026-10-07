@@ -1,4 +1,5 @@
 import type { Kind, Trace } from "./db.ts";
+import { characterCount, MAX_TRACE_LENGTH } from "./validation.ts";
 
 const KIND_META: Record<Kind, { glyph: string; hanzi: string; label: string }> = {
   dream: { glyph: "☁", hanzi: "夢", label: "a dream" },
@@ -104,7 +105,7 @@ const shell = (title: string, body: string): string => `<!doctype html>
       }
       form.trace-form label { display: grid; gap: 0.4rem; font-size: 0.85rem; color: var(--muted); }
       form.trace-form select,
-      form.trace-form input {
+      form.trace-form textarea {
         font: inherit;
         font-size: 1rem;
         width: 100%;
@@ -116,8 +117,17 @@ const shell = (title: string, body: string): string => `<!doctype html>
         background: var(--field);
         transition: border-color 180ms, box-shadow 180ms;
       }
-      form.trace-form input::placeholder { color: var(--muted); opacity: 0.85; }
-      form.trace-form :is(input, select):focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--haze-green); outline: none; }
+      form.trace-form textarea { resize: vertical; min-height: 7rem; line-height: 1.6; }
+      form.trace-form textarea::placeholder { color: var(--muted); opacity: 1; }
+      form.trace-form :is(textarea, select):focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--haze-green); outline: none; }
+      .input-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem 1rem; flex-wrap: wrap; }
+      .input-hint, .privacy-note, .trace-counter { color: var(--muted); font-size: 0.75rem; margin: 0; }
+      .trace-counter { font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .form-message { margin: 0; padding: 0.7rem 0.85rem; border: 1px solid var(--line); border-radius: 0.45rem; font-size: 0.9rem; overflow-wrap: anywhere; }
+      .form-error, .trace-counter.over-limit { color: light-dark(#96392e, #ffc0b6); }
+      .form-error { border-color: currentColor; }
+      .form-success { background: var(--mine); color: var(--ink); }
+      [aria-invalid="true"] { border-color: light-dark(#96392e, #ffc0b6) !important; }
       form.trace-form button {
         font: inherit;
         justify-self: start;
@@ -148,7 +158,7 @@ const shell = (title: string, body: string): string => `<!doctype html>
       li.trace:hover { background: var(--surface); border-color: var(--line); }
       li.trace.mine { background: var(--mine); }
       li.trace .glyph { font-size: 1.1rem; text-align: center; color: var(--accent); }
-      li.trace .text { overflow-wrap: anywhere; min-width: 0; }
+      li.trace .text { overflow-wrap: anywhere; min-width: 0; white-space: pre-wrap; }
       li.trace .when { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
       .empty { padding: 2rem 1rem; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 0.75rem; font-size: 0.95rem; }
       .empty::before { content: "○"; display: block; margin-bottom: 0.5rem; color: var(--accent); font-size: 1.6rem; }
@@ -199,10 +209,26 @@ const shell = (title: string, body: string): string => `<!doctype html>
   </body>
 </html>`;
 
-export function renderWall(traces: Trace[], visitorId: string): string {
+export interface WallFeedback {
+  text?: string;
+  kind?: string;
+  error?: string;
+  errorField?: "kind" | "text";
+  posted?: boolean;
+}
+
+export function renderWall(traces: Trace[], visitorId: string, feedback: WallFeedback = {}): string {
+  const draft = feedback.text ?? "";
+  const chosenKind = feedback.kind ?? "dream";
   const options = Object.entries(KIND_META)
-    .map(([value, m]) => `<option value="${value}">${m.hanzi} ${escapeHtml(m.label)}</option>`)
+    .map(([value, m]) => `<option value="${value}"${value === chosenKind ? " selected" : ""}>${m.hanzi} ${escapeHtml(m.label)}</option>`)
     .join("");
+  const invalidKind = !Object.hasOwn(KIND_META, chosenKind);
+  const message = feedback.error
+    ? `<p class="form-message form-error" id="form-error" role="alert">${escapeHtml(feedback.error)}</p>`
+    : feedback.posted
+      ? `<p class="form-message form-success" role="status">Your thought has found a place here.</p>`
+      : "";
 
   const items = traces.length
     ? traces
@@ -229,19 +255,62 @@ export function renderWall(traces: Trace[], visitorId: string): string {
     </header>
     <main>
       <form class="trace-form" method="post" action="/trace">
+        ${message}
         <label>this feels like&hellip;
-          <select name="kind" required>${options}</select>
+          <select name="kind" required${feedback.errorField === "kind" ? ' aria-invalid="true" aria-describedby="form-error"' : ""}>${invalidKind ? '<option value="" disabled selected>choose one of the six</option>' : ""}${options}</select>
         </label>
         <label>what passed through
-          <input type="text" name="text" maxlength="240" required placeholder="a fragment, not an essay" />
+          <textarea id="trace-text" name="text" rows="3" required aria-describedby="trace-hint trace-counter${feedback.errorField === "text" ? " form-error" : ""}"${feedback.errorField === "text" ? ' aria-invalid="true"' : ""} placeholder="a fragment, not an essay">
+${escapeHtml(draft)}</textarea>
         </label>
+        <div class="input-meta">
+          <p class="input-hint" id="trace-hint">Up to ${MAX_TRACE_LENGTH} characters. Emoji count as whole characters.</p>
+          <span class="trace-counter" id="trace-counter" aria-live="polite" aria-atomic="true">${characterCount(draft.trim())} / ${MAX_TRACE_LENGTH}</span>
+        </div>
         <button type="submit">let it go</button>
+        <p class="privacy-note">Thoughts stay here and cannot be edited or removed. This browser remembers which ones are yours.</p>
       </form>
       <h2 class="wall-heading" id="wall-heading">passing through</h2>
       <ul class="wall" aria-labelledby="wall-heading">
         ${items}
       </ul>
     </main>
+    <script>
+      (() => {
+        // Older browsers still use the server's validation and ordinary form POST.
+        if (typeof Intl.Segmenter !== "function") return;
+        const form = document.querySelector(".trace-form");
+        const input = document.getElementById("trace-text");
+        const counter = document.getElementById("trace-counter");
+        const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
+        let composing = false;
+        function update() {
+          const length = Array.from(segmenter.segment(input.value.trim())).length;
+          const over = length > ${MAX_TRACE_LENGTH};
+          counter.textContent = length + " / ${MAX_TRACE_LENGTH}";
+          counter.classList.toggle("over-limit", over);
+          const message = over
+            ? "Please keep your thought to ${MAX_TRACE_LENGTH} characters. Your draft is still here."
+            : length === 0 ? "Please leave a thought before letting it go." : "";
+          input.setCustomValidity(message);
+          if (over) input.setAttribute("aria-invalid", "true");
+          else input.removeAttribute("aria-invalid");
+        }
+        input.addEventListener("compositionstart", () => {
+          composing = true;
+          input.setCustomValidity("");
+        });
+        input.addEventListener("compositionend", () => { composing = false; update(); });
+        input.addEventListener("input", () => { if (!composing) update(); });
+        form.addEventListener("submit", (event) => {
+          if (composing) { event.preventDefault(); return; }
+          update();
+          if (!form.checkValidity()) { event.preventDefault(); form.reportValidity(); }
+        });
+        // Keep the server's error semantics until the draft is actually edited.
+        if (!document.getElementById("form-error")) update();
+      })();
+    </script>
   `;
   return shell("六如 — a wall for passing things", body);
 }

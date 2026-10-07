@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { marked } from "marked";
 import { addTrace, isKind, recentTraces } from "./db.ts";
 import { renderReadme, renderWall } from "./templates.ts";
+import { characterCount, MAX_TRACE_LENGTH } from "./validation.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const VISITOR_COOKIE = "visitor";
@@ -44,7 +45,7 @@ const server = createServer(async (req, res) => {
 
   try {
     if (url.pathname === "/" && req.method === "GET") {
-      const html = renderWall(recentTraces(), visitorId);
+      const html = renderWall(recentTraces(), visitorId, { posted: url.searchParams.get("posted") === "1" });
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         ...(setCookie ? { "set-cookie": setCookie } : {}),
@@ -57,12 +58,29 @@ const server = createServer(async (req, res) => {
       const raw = await readBody(req);
       const params = new URLSearchParams(raw);
       const kind = params.get("kind") ?? "";
-      const text = (params.get("text") ?? "").trim().slice(0, 240);
-      if (isKind(kind) && text.length > 0) {
-        addTrace(visitorId, kind, text);
+      const draft = params.get("text") ?? "";
+      const text = draft.trim();
+      const length = characterCount(text);
+      const error = !isKind(kind)
+        ? "Please choose one of the six kinds. Your draft is still here."
+        : length === 0
+          ? "Please leave a thought before letting it go."
+          : length > MAX_TRACE_LENGTH
+            ? `Please keep your thought to ${MAX_TRACE_LENGTH} characters. Your draft is still here.`
+            : undefined;
+      if (error || !isKind(kind)) {
+        res.writeHead(422, {
+          "content-type": "text/html; charset=utf-8",
+          ...(setCookie ? { "set-cookie": setCookie } : {}),
+        });
+        res.end(renderWall(recentTraces(), visitorId, {
+          text: draft, kind, error, errorField: !isKind(kind) ? "kind" : "text",
+        }));
+        return;
       }
+      addTrace(visitorId, kind, text);
       res.writeHead(303, {
-        location: "/",
+        location: "/?posted=1",
         ...(setCookie ? { "set-cookie": setCookie } : {}),
       });
       res.end();

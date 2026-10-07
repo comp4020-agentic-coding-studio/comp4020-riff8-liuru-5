@@ -41,8 +41,11 @@ standing between this and actually delivering co-presence. Next crit's job.
 ## What's enforced vs. what's judged
 
 Enforced, in `spec/`: a trace needs a real kind (one of the six) and non-empty
-text capped at 240 characters, or the server silently drops it rather than
-storing garbage. Traces persist in SQLite on the app's own volume, so they
+text of at most 240 whole characters after surrounding whitespace is removed.
+Joined emoji and combined accents count as one character. Invalid submissions
+return an explanation and keep the draft; text is never silently cut short.
+The live counter is a convenience: validation also works without JavaScript.
+Traces persist in SQLite on the app's own volume, so they
 survive a restart or a redeploy — not just the current process.
 
 Judged, by me now and by a reader later: whether the wall actually feels like
