@@ -45,6 +45,9 @@ text of at most 240 whole characters after surrounding whitespace is removed.
 Joined emoji and combined accents count as one character. Invalid submissions
 return an explanation and keep the draft; text is never silently cut short.
 The live counter is a convenience: validation also works without JavaScript.
+Forms have a separate 64 KiB encoded-body limit and a 10-second read timeout;
+oversized, stalled, or unsupported uploads receive 413, 408, or 415 respectively.
+Malformed visitor cookies are replaced safely instead of interrupting the wall.
 Traces persist in SQLite on the app's own volume, so they
 survive a restart or a redeploy — not just the current process.
 

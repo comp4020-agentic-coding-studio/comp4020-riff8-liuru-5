@@ -1,34 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer } from "node:http";
 import { marked } from "marked";
 import { addTrace, isKind, recentTraces } from "./db.ts";
 import { renderReadme, renderWall } from "./templates.ts";
 import { characterCount, MAX_TRACE_LENGTH } from "./validation.ts";
+import { readFormBody, readVisitorCookie, RequestBodyError } from "./request.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const VISITOR_COOKIE = "visitor";
 const FIVE_YEARS = 60 * 60 * 24 * 365 * 5;
-
-function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const part of header.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim());
-  }
-  return out;
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
-}
 
 function visitorCookie(id: string): string {
   // Persistent identity, not a login: this is what lets a returning stranger
@@ -37,13 +18,22 @@ function visitorCookie(id: string): string {
 }
 
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-  const cookies = parseCookies(req.headers.cookie);
-  const existingVisitor = cookies[VISITOR_COOKIE];
-  const visitorId = existingVisitor ?? randomUUID();
-  const setCookie = existingVisitor ? undefined : visitorCookie(visitorId);
-
   try {
+    let url: URL;
+    try {
+      // Routing needs only the path; do not trust Host as a URL parsing base.
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      res.writeHead(400, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+      res.end("invalid request URL");
+      return;
+    }
+    const existingVisitor = readVisitorCookie(req.headers.cookie);
+    const visitorId = existingVisitor ?? randomUUID();
+    const setCookie = existingVisitor ? undefined : visitorCookie(visitorId);
+    // The wall contains a browser-specific 'yours' marker and may include drafts.
+    res.setHeader("cache-control", "no-store");
+
     if (url.pathname === "/" && req.method === "GET") {
       const html = renderWall(recentTraces(), visitorId, { posted: url.searchParams.get("posted") === "1" });
       res.writeHead(200, {
@@ -55,7 +45,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/trace" && req.method === "POST") {
-      const raw = await readBody(req);
+      const raw = await readFormBody(req);
       const params = new URLSearchParams(raw);
       const kind = params.get("kind") ?? "";
       const draft = params.get("text") ?? "";
@@ -98,9 +88,20 @@ const server = createServer(async (req, res) => {
     res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     res.end("not found");
   } catch (err) {
-    console.error(err);
-    res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-    res.end("internal error");
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) { res.destroy(); return; }
+    if (err instanceof RequestBodyError) {
+      // Close only after the error is sent; the body reader has stopped buffering.
+      res.writeHead(err.status, {
+        "content-type": "text/plain; charset=utf-8",
+        connection: "close",
+      });
+      res.end(err.message);
+    } else {
+      console.error(err);
+      res.writeHead(500, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+      res.end("internal error");
+    }
   }
 });
 
